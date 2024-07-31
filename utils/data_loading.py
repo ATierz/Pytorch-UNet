@@ -1,6 +1,7 @@
 import logging
 import numpy as np
 import torch
+import os
 from PIL import Image
 from functools import lru_cache
 from functools import partial
@@ -34,61 +35,61 @@ def unique_mask_values(idx, mask_dir, mask_suffix):
     else:
         raise ValueError(f'Loaded masks should have 2 or 3 dimensions, found {mask.ndim}')
 
-
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, scale: float = 1.0, mask_suffix: str = ''):
+    def __init__(self, images_dir: str, mask_dir: str, scale: float = 1.0, mask_suffix: str = '', transforms=None):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
         self.scale = scale
         self.mask_suffix = mask_suffix
+        self.transforms = transforms
 
-        self.ids = [splitext(file)[0] for file in listdir(images_dir) if isfile(join(images_dir, file)) and not file.startswith('.')]
+        self.ids = [splitext(file)[0] for file in os.listdir(images_dir) if isfile(join(images_dir, file)) and not file.startswith('.')]
         if not self.ids:
             raise RuntimeError(f'No input file found in {images_dir}, make sure you put your images there')
 
         logging.info(f'Creating dataset with {len(self.ids)} examples')
         logging.info('Scanning mask files to determine unique values')
-        with Pool() as p:
-            unique = list(tqdm(
-                p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
-                total=len(self.ids)
-            ))
-
-        self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
+        self.mask_values = [0, 255]
         logging.info(f'Unique mask values: {self.mask_values}')
 
     def __len__(self):
         return len(self.ids)
 
     @staticmethod
-    def preprocess(mask_values, pil_img, scale, is_mask):
+    def preprocess(mask_values, pil_img, pil_mask,  scale, transforms=None, is_mask=True):
         w, h = pil_img.size
+        mask_values = [0, 1]
         newW, newH = int(scale * w), int(scale * h)
         assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
-        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
-        img = np.asarray(pil_img)
+        pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
 
+        pil_mask = pil_mask.resize((newW, newH), resample=Image.NEAREST)
+        if transforms:
+            img, mask = transforms(pil_img, pil_mask)
+            img = np.asarray(img)
+            mask = np.asarray(mask)[0,:,:]
+        else:
+            img = np.asarray(pil_img)
+            mask = np.asarray(pil_mask)
         if is_mask:
-            mask = np.zeros((newH, newW), dtype=np.int64)
+            mask_ = np.zeros((newH, newW), dtype=np.int64)
             for i, v in enumerate(mask_values):
                 if img.ndim == 2:
-                    mask[img == v] = i
+                    mask_[mask == v] = i
                 else:
-                    mask[(img == v).all(-1)] = i
-
-            return mask
-
+                    mask_[(mask == v)] = i
         else:
-            if img.ndim == 2:
-                img = img[np.newaxis, ...]
-            else:
-                img = img.transpose((2, 0, 1))
+            mask_ = None
 
-            if (img > 1).any():
-                img = img / 255.0
+        if img.ndim == 2:
+            img = img[np.newaxis, ...]
+        elif not transforms:
+            img = img.transpose((2, 0, 1))
+        if (img > 1).any():
+            img = img / 255.0
 
-            return img
+        return img, mask_
 
     def __getitem__(self, idx):
         name = self.ids[idx]
@@ -103,15 +104,12 @@ class BasicDataset(Dataset):
         assert img.size == mask.size, \
             f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
-        img = self.preprocess(self.mask_values, img, self.scale, is_mask=False)
-        mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True)
+        img, mask = self.preprocess(self.mask_values, img, mask, self.scale, transforms=self.transforms)
 
         return {
             'image': torch.as_tensor(img.copy()).float().contiguous(),
             'mask': torch.as_tensor(mask.copy()).long().contiguous()
         }
-
-
 class CarvanaDataset(BasicDataset):
-    def __init__(self, images_dir, mask_dir, scale=1):
-        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+    def __init__(self, images_dir, mask_dir, scale=1,  transforms=None):
+        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask', transforms=transforms)

@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
-
+import cv2
 from utils.data_loading import BasicDataset
 from unet import UNet
 from utils.utils import plot_img_and_mask
@@ -18,7 +18,8 @@ def predict_img(net,
                 scale_factor=1,
                 out_threshold=0.5):
     net.eval()
-    img = torch.from_numpy(BasicDataset.preprocess(None, full_img, scale_factor, is_mask=False))
+    img, _ = BasicDataset.preprocess(None, full_img, full_img, scale_factor, is_mask=False)
+    img = torch.from_numpy(img)
     img = img.unsqueeze(0)
     img = img.to(device=device, dtype=torch.float32)
 
@@ -35,16 +36,16 @@ def predict_img(net,
 
 def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from input images')
-    parser.add_argument('--model', '-m', default='MODEL.pth', metavar='FILE',
+    parser.add_argument('--model', '-m', default='checkpoints/checkpoint_epoch281.pth', metavar='FILE',
                         help='Specify the file in which the model is stored')
-    parser.add_argument('--input', '-i', metavar='INPUT', nargs='+', help='Filenames of input images', required=True)
+    parser.add_argument('--input', '-i', metavar='INPUT', nargs='+', help='Filenames of input images', default=['Image_1.jpg'])
     parser.add_argument('--output', '-o', metavar='OUTPUT', nargs='+', help='Filenames of output images')
-    parser.add_argument('--viz', '-v', action='store_true',
+    parser.add_argument('--viz', '-v', action='store_true', default=True,
                         help='Visualize the images as they are processed')
     parser.add_argument('--no-save', '-n', action='store_true', help='Do not save the output masks')
-    parser.add_argument('--mask-threshold', '-t', type=float, default=0.5,
+    parser.add_argument('--mask-threshold', '-t', type=float, default=0.3,
                         help='Minimum probability value to consider a mask pixel white')
-    parser.add_argument('--scale', '-s', type=float, default=0.5,
+    parser.add_argument('--scale', '-s', type=float, default=0.2,
                         help='Scale factor for the input images')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes')
@@ -80,8 +81,16 @@ if __name__ == '__main__':
     args = get_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-    in_files = args.input
-    out_files = get_output_filenames(args)
+    # in_files = args.input
+    # out_files = get_output_filenames(args)
+    in_files = []
+    out_files = []
+    for folder in os.listdir('data/test'):
+        path = os.path.join('data/test', folder)
+        for name in os.listdir(path):
+            in_files.append(os.path.join(path, name))
+            out_files.append(os.path.join('data/pred', name))
+
 
     net = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
 
@@ -98,8 +107,13 @@ if __name__ == '__main__':
 
     for i, filename in enumerate(in_files):
         logging.info(f'Predicting image {filename} ...')
-        img = Image.open(filename)
+        if filename[-4:] == '.png':
+            continue
+            img = cv2.imread(filename)
+            img = cv2.resize(img[:, 186:-366, :], (4000, 3000))
+            cv2.imwrite(filename[:-3] + 'jpg', img)
 
+        img = Image.open(filename)
         mask = predict_img(net=net,
                            full_img=img,
                            scale_factor=args.scale,
