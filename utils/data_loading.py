@@ -2,6 +2,7 @@ import logging
 import numpy as np
 import torch
 import os
+import cv2
 from PIL import Image
 from functools import lru_cache
 from functools import partial
@@ -50,16 +51,23 @@ class BasicDataset(Dataset):
 
         logging.info(f'Creating dataset with {len(self.ids)} examples')
         logging.info('Scanning mask files to determine unique values')
-        self.mask_values = [0, 255]
+        with Pool() as p:
+            unique = list(tqdm(
+                p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
+                total=len(self.ids)
+            ))
+
+        self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
         logging.info(f'Unique mask values: {self.mask_values}')
 
     def __len__(self):
         return len(self.ids)
 
     @staticmethod
-    def preprocess(mask_values, pil_img, pil_mask,  scale, transforms=None, is_mask=True):
+    def preprocess(mask_values, pil_img, pil_mask,  scale, transforms=None):
+
+
         w, h = pil_img.size
-        mask_values = [0, 1]
         newW, newH = int(scale * w), int(scale * h)
         assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
         pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
@@ -69,18 +77,19 @@ class BasicDataset(Dataset):
             img, mask = transforms(pil_img, pil_mask)
             img = np.asarray(img)
             mask = np.asarray(mask)[0,:,:]
+            _, mask = cv2.threshold(mask, 0.5, 1, cv2.THRESH_BINARY)
+            mask_values = [0, 1]
         else:
             img = np.asarray(pil_img)
             mask = np.asarray(pil_mask)
-        if is_mask:
-            mask_ = np.zeros((newH, newW), dtype=np.int64)
-            for i, v in enumerate(mask_values):
-                if img.ndim == 2:
-                    mask_[mask == v] = i
-                else:
-                    mask_[(mask == v)] = i
-        else:
-            mask_ = None
+
+        mask_ = np.zeros((newH, newW), dtype=np.int64)
+        for i, v in enumerate(mask_values):
+            if mask.ndim == 2:
+                mask_[mask == v] = i
+            else:
+                mask_[(img == v).all(-1)] = i
+
 
         if img.ndim == 2:
             img = img[np.newaxis, ...]

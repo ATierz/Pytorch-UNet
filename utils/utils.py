@@ -1,35 +1,43 @@
+import os
+import cv2
+import numpy as np
+from PIL import Image
 import matplotlib.pyplot as plt
-import wandb
-import torch
-from torchvision.utils import make_grid
 
 
 
+def get_output_filenames(args):
+    def _generate_name(fn):
+        return f'{os.path.splitext(fn)[0]}_OUT.png'
 
-def plot_img_and_mask(img, mask):
-    classes = mask.max() + 1
-    fig, ax = plt.subplots(1, classes + 1)
-    ax[0].set_title('Input image')
-    ax[0].imshow(img)
-    for i in range(classes):
-        ax[i + 1].set_title(f'Mask (class {i + 1})')
-        ax[i + 1].imshow(mask == i)
-    plt.xticks([]), plt.yticks([])
-    plt.show()
+    return args.output or list(map(_generate_name, args.input))
 
 
-def log_inference_example(model, dataloader, device):
-    model.eval()
-    for batch in dataloader:
-        inputs = batch['image'].to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-        with torch.no_grad():
-            outputs = model(inputs)
-        # Selecciona la primera imagen del batch para inferencia
-        input_image = inputs[0].cpu()
-        output_image = outputs[0].cpu()
-        cosi = (output_image.argmax(dim=0)).long().squeeze()
 
-        # grid = make_grid([input_image[0, :, :], cosi], nrow=2)
-        grid = make_grid([input_image[0, :, :].unsqueeze(0), cosi.unsqueeze(0)], nrow=2).numpy() * 255
+def mask_to_image(mask: np.ndarray, mask_values):
+    if isinstance(mask_values[0], list):
+        out = np.zeros((mask.shape[-2], mask.shape[-1], len(mask_values[0])), dtype=np.uint8)
+    elif mask_values == [0, 1]:
+        out = np.zeros((mask.shape[-2], mask.shape[-1]), dtype=bool)
+    else:
+        out = np.zeros((mask.shape[-2], mask.shape[-1]), dtype=np.uint8)
 
-        return grid.transpose(1, 2, 0)
+    if mask.ndim == 3:
+        mask = np.argmax(mask, axis=0)
+
+    for i, v in enumerate(mask_values):
+        out[mask == i] = v
+
+    return Image.fromarray(out)
+
+
+def process_image(img, mask, scale_factor, w_beam):
+    mask = mask[:, :w_beam]
+    binary_mask = mask.astype(np.uint8) * 255
+    binary_mask = cv2.erode(binary_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+    binary_mask = cv2.GaussianBlur(binary_mask, (3, 3), 0)
+
+    img_resized = cv2.resize(np.array(img), None, fx=scale_factor, fy=scale_factor)
+    frame_gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+
+    return binary_mask, frame_gray, img_resized
